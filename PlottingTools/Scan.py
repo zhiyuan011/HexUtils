@@ -8,10 +8,12 @@ import inspect
 import warnings
 from matplotlib.ticker import MaxNLocator
 from typing import Union, Callable
+import scipy.interpolate as interp
+import awkward as ak
 
 conf_bounds_1d = {
     65 : 1,
-    95 : 3.84
+    95 : 4.00
 }
 
 conf_bounds_2d = {
@@ -89,7 +91,7 @@ class Scan(abc.ABC):
     def save(
         self,
         fpath:str,
-        tight_layout:bool=True,
+        tight_layout:bool=False,
         ):
         fig = self.ax.get_figure()
         if tight_layout:
@@ -123,6 +125,8 @@ class Scan1D(Scan):
         line_width:float=2,
         marker_style:str="",
         zorder:int=None,
+        interpSpline:bool=False,
+        kill_negative:float=-np.inf
     ):
         if isinstance(line_style, str):
             if line_style not in self.linestyles.keys():
@@ -142,15 +146,33 @@ class Scan1D(Scan):
 
         for file in files:
             data_temp = uproot.open(file)[branch_name].arrays(
-                [x, y], library='np'
+                [x, y], library='ak'
             )
+            data_temp = data_temp[data_temp[y] >= kill_negative]
+            data_temp[y] = data_temp[y] - np.min(data_temp[y])
+            data_cleaned_temp_x = []
+            data_cleaned_temp_y = []
+            x_values = np.unique(data_temp[x])
+            for unique_x in x_values:
+                mask = (data_temp[x] == unique_x)
+                minimized = np.argmin(data_temp[mask][y])
+                data_cleaned_temp_x.append(data_temp[mask][minimized][x])
+                data_cleaned_temp_y.append(data_temp[mask][minimized][y])
+            data_cleaned_temp_x = np.array(data_cleaned_temp_x)
+            data_cleaned_temp_y = np.array(data_cleaned_temp_y)
+            
+            #kills failed points the old-fashioned way
+            if kill_points:
+                data_cleaned_temp_x = data_cleaned_temp_x[data_cleaned_temp_y < 1000]
+                data_cleaned_temp_y = data_cleaned_temp_y[data_cleaned_temp_y < 1000]
+        
             if x in data.keys():
-                data[x] = np.concatenate( (data[x], data_temp[x]) )
-                data[y] = np.concatenate( (data[y], data_temp[y]) )
+                data[x] = np.concatenate( (data[x], data_cleaned_temp_x) )
+                data[y] = np.concatenate( (data[y], data_cleaned_temp_y) )
             else:
-                data[x] = data_temp[x]
-                data[y] = data_temp[y]
-        del data_temp
+                data[x] = data_cleaned_temp_x
+                data[y] = data_cleaned_temp_y
+        del data_temp, data_cleaned_temp_x, data_cleaned_temp_y
 
         indices = np.argsort(data[x])
         if self.x_transform is not None:
@@ -170,6 +192,7 @@ class Scan1D(Scan):
             y_data = data[y][indices]
 
         minimized_value = np.argmin(y_data)
+        ref_point = y_data[minimized_value]
         convergence_point = x_data[minimized_value]
 
         if kill_index is not None:
@@ -179,25 +202,33 @@ class Scan1D(Scan):
             x_data = np.delete(x_data, kill_index)
             y_data = np.delete(y_data, kill_index)
 
-        if kill_points:
-            i = 1
-            while i < len(x_data) - 1:
-                if (
-                    (y_data[i - 1] < y_data[i] and y_data[i + 1] < y_data[i])
-                    and
-                    (i != minimized_value)
-                ):
-                    y_data = np.delete(y_data, i)
-                    x_data = np.delete(x_data, i)
-                    minimized_value = np.argmin(y_data)
-                    convergence_point = x_data[minimized_value]
-                    i = 1
-                    continue
-                i += 1
+        # if kill_points:
+        #     i = 1
+        #     while i < len(x_data) - 1:
+        #         if (
+        #             (y_data[i - 1] < y_data[i] and y_data[i + 1] < y_data[i])
+        #             and
+        #             (i != minimized_value)
+        #         ):
+        #             y_data = np.delete(y_data, i)
+        #             x_data = np.delete(x_data, i)
+        #             minimized_value = np.argmin(y_data)
+        #             # ref_point = y_data[minimized_value]
+        #             convergence_point = x_data[minimized_value]
+        #             i = 1
+        #             continue
+        #         i += 1
 
         data[x] = x_data
-        data[y] = y_data
+        data[y] = y_data - ref_point
 
+        if interpSpline:
+            spline = interp.CubicSpline(x_data, y_data)
+            x_data = np.linspace(np.min(x_data), np.max(x_data), 1_000_000)
+            y_data = spline(x_data)
+            
+            minimized_value = np.argmin(y_data)
+            convergence_point = x_data[minimized_value]
 
         max_point_on_line = max(y_data)
         values_before = (y_data[:minimized_value][::-1], x_data[:minimized_value][::-1])
@@ -221,30 +252,48 @@ class Scan1D(Scan):
                     convergence_point - np.interp(1, *values_after, left=np.nan, right=np.nan)
                     )
 
-            if max_point_on_line > 3.84: #2 sigma
+            if max_point_on_line > 4.00: #2 sigma
                 if do_before:
                     conf1 = (
-                        np.interp(3.84, *values_before, left=np.nan, right=np.nan)
+                        np.interp(4.00, *values_before, left=np.nan, right=np.nan)
                         )
                 if do_after:
                     conf2 = (
-                        np.interp(3.84, *values_after, left=np.nan, right=np.nan)
+                        np.interp(4.00, *values_after, left=np.nan, right=np.nan)
                         )
 
         if zorder is None:
             zorder = max([child.zorder for child in self.ax.get_children()]) + 1
         if color is None:
             color = self.prop_cycle[self.n_lines]
-        self.ax.plot(
-            x_data,
-            y_data,
-            lw=line_width,
-            label=label,
-            color=color,
-            ls=line_style,
-            zorder=zorder,
-            marker=marker_style
-        )
+        
+        if interpSpline and marker_style:
+            self.ax.plot(
+                x_data,
+                y_data,
+                lw=line_width,
+                label=label,
+                color=color,
+                ls=line_style,
+                zorder=zorder,
+            )
+            self.ax.scatter(
+                data[x],
+                data[y],
+                color=color,
+                marker=marker_style
+            )
+        else:
+            self.ax.plot(
+                x_data,
+                y_data,
+                lw=line_width,
+                label=label,
+                color=color,
+                ls=line_style,
+                zorder=zorder,
+                marker=marker_style
+            )
 
         self.n_lines += 1
 
@@ -257,10 +306,10 @@ class Scan1D(Scan):
         self.scans[label] = (
             (
                 convergence_point,
-                np.abs(convergence_point - uncertainty1),
-                np.abs(convergence_point + uncertainty2),
-                np.abs(convergence_point - conf1),
-                np.abs(convergence_point + conf2)
+                np.abs(uncertainty1),
+                np.abs(uncertainty2),
+                np.abs(conf1),
+                np.abs(conf2)
             ),
             data
         )
@@ -277,6 +326,7 @@ class Scan1D(Scan):
         margin_add_y_65:float=None, margin_add_y_95:float=None,
         legend_loc:str="best", legend_fontsize:float=12,
         labelspacing:float=2, legend_bbox_to_anchor:tuple=(0,0,1,0.95),
+        legend_ncol:int=1,
         cmstext:str="Preliminary", lumitext:str=r"138 $fb^{-1}$ (13 TeV)",
         cmstext_size:float=None, lumitext_size:float=None,
         tick_size:float=20, tick_pad:float=10
@@ -324,11 +374,16 @@ class Scan1D(Scan):
         if 1 < max_yval and self.likelihood_plot: #1 sigma
             self.ax.axhline(1, ls="dashed", color='black', lw=1, dashes=(16, 10))
             self.ax.text(max_xval*margin_mult_x, 1+margin_add_y_65, "68% CL", horizontalalignment="right")
-            if 3.84 < max_yval: #2 sigma
-                self.ax.axhline(3.84, ls="dashed", color='black', lw=1, dashes=(16, 10))
-                self.ax.text(max_xval*margin_mult_x, 3.84+margin_add_y_95, "95% CL", horizontalalignment="right")
+            if 4.00 < max_yval: #2 sigma
+                self.ax.axhline(4.00, ls="dashed", color='black', lw=1, dashes=(16, 10))
+                self.ax.text(max_xval*margin_mult_x, 4.00+margin_add_y_95, "95% CL", horizontalalignment="right")
 
-        self.ax.legend(loc=legend_loc, labelspacing=labelspacing, bbox_to_anchor=legend_bbox_to_anchor, fontsize=legend_fontsize)
+        self.ax.legend(
+            loc=legend_loc, labelspacing=labelspacing, 
+            bbox_to_anchor=legend_bbox_to_anchor, 
+            fontsize=legend_fontsize,
+            ncol=legend_ncol
+        )
 
         # plt.style.use(hep.style.CMS)
         self.ax.tick_params(axis='both', which='both', labelsize=tick_size, pad=tick_pad, reset=True)
@@ -339,7 +394,7 @@ class Scan1D(Scan):
                 raise ValueError("Must specify a variable name if outputting as LaTeX!")
             returnable = []
             for name, ((central, lower, upper, lower_conf, upper_conf), _) in self.scans.items():
-                tex_str = f"{central:.{decimals}f}^{{+{np.abs(upper):.{decimals}f}}}_{{-{np.abs(lower):.{decimals}f}}}"
+                tex_str = name + f": {central:.{decimals}f}^{{+{np.abs(upper):.{decimals}f}}}_{{-{np.abs(lower):.{decimals}f}}}"
                 tex_str += f"[{lower_conf:.{decimals}f} < {variable_name} < {upper_conf:.{decimals}f}]"
                 returnable.append(tex_str)
             returnable = "\n".join(returnable)
@@ -392,15 +447,54 @@ class Scan2D(Scan):
             data_temp = uproot.open(file)[branch_name].arrays(
                 [x, y, z], library='np'
             )
+            data_cleaned_temp_x = []
+            data_cleaned_temp_y = []
+            data_cleaned_temp_z = []
+            x_values = np.unique(data_temp[x])
+            y_values = np.unique(data_temp[y])
+            for unique_x in x_values:
+                for unique_y in y_values:
+                    mask = (data_temp[x] == unique_x) & (data_temp[y] == unique_y)
+                    #get the smallest out of the values in the mask for rand sampling
+                    if not np.any(mask):
+                        continue
+                    
+                    minimized = np.argmin(data_temp[z][mask])
+                    data_cleaned_temp_x.append(data_temp[x][mask][minimized])
+                    data_cleaned_temp_y.append(data_temp[y][mask][minimized])
+                    data_cleaned_temp_z.append(data_temp[z][mask][minimized])
+                    
+            data_cleaned_temp_x = np.array(data_cleaned_temp_x)
+            data_cleaned_temp_y = np.array(data_cleaned_temp_y)
+            data_cleaned_temp_z = np.array(data_cleaned_temp_z)
+            
+            # #kills failed points the old-fashioned way
+            # if kill_points:
+            #     data_cleaned_temp_x = data_cleaned_temp_x[data_cleaned_temp_y < 1000]
+            #     data_cleaned_temp_y = data_cleaned_temp_y[data_cleaned_temp_y < 1000]
+        
             if x in data.keys():
-                data[x] = np.concatenate( (data[x], data_temp[x]) )
-                data[y] = np.concatenate( (data[y], data_temp[y]) )
-                data[z] = np.concatenate( (data[z], data_temp[z]) )
+                data[x] = np.concatenate( (data[x], data_cleaned_temp_x) )
+                data[y] = np.concatenate( (data[y], data_cleaned_temp_y) )
+                data[z] = np.concatenate( (data[z], data_cleaned_temp_z) )
             else:
-                data[x] = data_temp[x]
-                data[y] = data_temp[y]
-                data[z] = data_temp[z]
-        del data_temp
+                data[x] = data_cleaned_temp_x
+                data[y] = data_cleaned_temp_y
+                data[z] = data_cleaned_temp_z
+            
+            del data_temp
+        #     data_temp = uproot.open(file)[branch_name].arrays(
+        #         [x, y, z], library='np'
+        #     )
+        #     if x in data.keys():
+        #         data[x] = np.concatenate( (data[x], data_temp[x]) )
+        #         data[y] = np.concatenate( (data[y], data_temp[y]) )
+        #         data[z] = np.concatenate( (data[z], data_temp[z]) )
+        #     else:
+        #         data[x] = data_temp[x]
+        #         data[y] = data_temp[y]
+        #         data[z] = data_temp[z]
+        # del data_temp
 
         if self.x_transform is not None:
             x_data = np.array(
@@ -511,6 +605,29 @@ class Scan2D(Scan):
             color,
             size
             )
+
+    def get_correlation(
+        self
+    ):
+        if not self.likelihood_plot:
+            raise ValueError("Correlation Calculation only available for likelihood plots!")
+        
+        weights = np.exp(
+            -1*(
+                self.scans[1][self.z] - np.min(self.scans[1][self.z])
+            )/2
+        )
+        weights = weights/weights.sum()
+        exp_X = np.sum(weights*self.scans[1][self.x])
+        exp_Y = np.sum(weights*self.scans[1][self.y])
+        exp_XY = np.sum(weights*self.scans[1][self.y]*self.scans[1][self.x])
+        exp_X_exp_Y = exp_X*exp_Y
+
+        std_X = np.sqrt(np.sum(weights*self.scans[1][self.x]**2) - exp_X**2)
+        std_Y = np.sqrt(np.sum(weights*self.scans[1][self.y]**2) - exp_Y**2)
+        
+        correlation = (exp_XY - exp_X_exp_Y)/(std_X*std_Y)
+        return correlation
 
     def plot(
         self,

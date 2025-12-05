@@ -217,8 +217,8 @@ def unroll_ND_histogram(N_dimension_counts, isbkg=False):
         fill_val = hist_integral*0.1/len(unrolled_arr)
         unrolled_arr[unrolled_arr <= 0] = fill_val
 
-    pos_arr = np.where(unrolled_arr > 0, unrolled_arr, 0)
-    neg_arr = -1*np.where(unrolled_arr < 0, unrolled_arr, 0)
+    pos_arr = np.maximum(unrolled_arr, 0)
+    neg_arr = -1*np.minimum(unrolled_arr, 0)
     
     bins = np.arange(len(unrolled_arr) + 1)
 

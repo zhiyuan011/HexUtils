@@ -1,8 +1,8 @@
 import numpy as np
 import vector
 import awkward as ak
-import sympy
 import numba as nb
+import sympy
 
 @nb.vectorize([nb.float64(nb.complex128),nb.float32(nb.complex64)])
 def abs2(x):

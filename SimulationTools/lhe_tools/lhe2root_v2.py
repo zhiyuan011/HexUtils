@@ -66,18 +66,30 @@ class LHEEvent(object, metaclass=abc.ABCMeta):
         self.isgen = isgen
 
         self.weights = {}
+        wght_lines = False
+        wght_num = 0
         for line in lines:
-            if "<wgt" not in line: continue
-            match = re.match("<wgt id='(.*)'>\s+([+\-\d.e]+)\s+<\/wgt>", line)
-            if match: self.weights[match.group(1)] = float(match.group(2))
+            if "<wgt" in line:
+                match = re.match("<wgt id='(.*)'>\s+([+\-\d.e]+)\s+<\/wgt>", line)
+                if match: self.weights[match.group(1)] = float(match.group(2))
+                
+            if "<weights>" in line:
+                wght_lines = True
+            elif "</weights>" in line:
+                wght_lines = False
+            elif wght_lines:
+                self.weights[wght_num] = float(line)
+                wght_num += 1
 
         lines = [line for line in lines if not ("<" in line or ">" in line or not line.split("#")[0].strip())]
         nparticles, _, weight, _, _, _ = lines[0].split()
 
         nparticles = int(nparticles)
         self.weight = float(weight)
-        if nparticles != len(lines)-1:
-            raise ValueError(f"Wrong number of particles! Should be {nparticles}, have {len(lines)-1}")
+        #if nparticles != len([l for l in lines if len(l.strip().split()) != 0])-1:
+        #    print("\n".join(lines))
+        #    print()
+        #    raise ValueError(f"Wrong number of particles! Should be {nparticles}, have {len(lines)-1}")
 
         daughters_lhe, associated_lhe, mothers_lhe = self.extracteventparticles()
             
@@ -446,9 +458,8 @@ def main(raw_args=None):
         try:
             c[inputfile] = reader.cross_section
         except:
-            warnings.warn(inputfile, " has a corrupted header and xsec cannot be read!")
-            del reader, inputfile
-            continue
+            warnings.warn(f"{inputfile} has a corrupted header and xsec cannot be read!")
+            c[inputfile] = (0,0)
         all_events += reader.all_events
         del reader, inputfile
 
